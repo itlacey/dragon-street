@@ -13,7 +13,8 @@ window.addEventListener('keydown', e => { keys[e.key] = true; e.preventDefault()
 window.addEventListener('keyup', e => { keys[e.key] = false; });
 
 // ---- Game State ----
-let gameState = 'title'; // title, playing, levelClear, gameOver, victory
+let gameState = 'title'; // title, charSelect, playing, levelClear, gameOver, victory
+let selectedChar = 0;
 let level = 1;
 let maxLevel = 5;
 let score = 0;
@@ -32,6 +33,16 @@ let levelTransitionTimer = 0;
 let comboCount = 0;
 let comboTimer = 0;
 let hitstopFrames = 0;
+
+// ---- Special Ability State ----
+let specialAbility = {
+    active: false,
+    timer: 0,        // frames remaining (30s = 1800 frames at 60fps)
+    cooldown: 0,     // cooldown frames remaining
+    triggered: false, // has been used this life?
+};
+// Peak combo tracks the highest combo reached without resetting (for Goku trigger)
+let peakCombo = 0;
 
 // ---- Level Definitions ----
 const LEVELS = [
@@ -83,6 +94,90 @@ const COLORS = {
     kiBlast: '#FF4444',
 };
 
+// ---- Character Roster ----
+const CHARACTERS = [
+    {
+        name: 'GOKU',
+        desc: '20-hit combo triggers SUPER SAIYAN for 30s!',
+        body: '#FF6600', outline: '#CC4400', hair: '#111111', pants: '#FF6600', belt: '#0044CC',
+        skin: '#FFCC88',
+        speed: 3.5, maxHP: 100, maxEnergy: 100, punchDmg: 8, kickDmg: 12, specialDmg: 20,
+        hairStyle: 'goku',
+        // Super Saiyan: 20-hit combo → 30s of 2x damage, +speed, golden aura, invincible to knockback
+        ability: 'supersaiyan',
+        abilityName: 'SUPER SAIYAN',
+        abilityDesc: '20-HIT COMBO TO TRANSFORM',
+        abilityTrigger: 'combo', // triggered by reaching 20 combo
+        abilityCombo: 20,
+        abilityDuration: 1800, // 30s at 60fps
+        // Buffs during super saiyan
+        ssBody: '#FFD700', ssOutline: '#DDAA00', ssHair: '#FFD700',
+        ssDmgMult: 2.0, ssSpeedMult: 1.4,
+    },
+    {
+        name: 'RYU',
+        desc: 'DRAGON FIST: 15-combo unleashes piercing blast',
+        body: '#FF8800', outline: '#CC5500', hair: '#FFD700', pants: '#2244AA', belt: '#8B0000',
+        skin: '#FFCC88',
+        speed: 3.5, maxHP: 100, maxEnergy: 100, punchDmg: 8, kickDmg: 12, specialDmg: 20,
+        hairStyle: 'spiky',
+        // Dragon Fist: 15-hit combo → 30s of triple ki blast (3 projectiles per shot), free energy
+        ability: 'dragonfist',
+        abilityName: 'DRAGON FIST',
+        abilityDesc: '15-HIT COMBO TO UNLEASH',
+        abilityTrigger: 'combo',
+        abilityCombo: 15,
+        abilityDuration: 1800,
+    },
+    {
+        name: 'KIRA',
+        desc: 'SHADOW CLONE: 12-combo summons clones to fight',
+        body: '#9922CC', outline: '#660099', hair: '#FF44AA', pants: '#1a1a2e', belt: '#CC00CC',
+        skin: '#FFBB99',
+        speed: 4.5, maxHP: 80, maxEnergy: 120, punchDmg: 6, kickDmg: 10, specialDmg: 18,
+        hairStyle: 'long',
+        // Shadow Clone: 12-hit combo → 30s of shadow clones that mirror attacks
+        ability: 'shadowclone',
+        abilityName: 'SHADOW CLONE',
+        abilityDesc: '12-HIT COMBO TO SUMMON',
+        abilityTrigger: 'combo',
+        abilityCombo: 12,
+        abilityDuration: 1800,
+    },
+    {
+        name: 'BRUTUS',
+        desc: 'BERSERKER: 10-combo triggers unstoppable rage',
+        body: '#228844', outline: '#115522', hair: '#8B4513', pants: '#444444', belt: '#FFD700',
+        skin: '#DDA577',
+        speed: 2.5, maxHP: 140, maxEnergy: 70, punchDmg: 12, kickDmg: 16, specialDmg: 25,
+        hairStyle: 'mohawk',
+        // Berserker: 10-hit combo → 30s of 2.5x damage, can't be stunned, massive knockback
+        ability: 'berserker',
+        abilityName: 'BERSERKER RAGE',
+        abilityDesc: '10-HIT COMBO TO RAGE',
+        abilityTrigger: 'combo',
+        abilityCombo: 10,
+        abilityDuration: 1800,
+        berserkDmgMult: 2.5, berserkSpeedMult: 1.3,
+        berserkBody: '#CC0000', berserkOutline: '#880000',
+    },
+    {
+        name: 'BLAZE',
+        desc: 'INFERNO: 15-combo ignites all enemies on screen',
+        body: '#CC2200', outline: '#881100', hair: '#FF4400', pants: '#222222', belt: '#FF8800',
+        skin: '#FFCC88',
+        speed: 3.2, maxHP: 90, maxEnergy: 140, punchDmg: 7, kickDmg: 11, specialDmg: 28,
+        hairStyle: 'flame',
+        // Inferno: 15-hit combo → 30s of fire aura that burns nearby enemies + fire trail
+        ability: 'inferno',
+        abilityName: 'INFERNO MODE',
+        abilityDesc: '15-HIT COMBO TO IGNITE',
+        abilityTrigger: 'combo',
+        abilityCombo: 15,
+        abilityDuration: 1800,
+    },
+];
+
 // ---- Particle System ----
 function spawnParticle(x, y, type, count) {
     for (let i = 0; i < count; i++) {
@@ -130,6 +225,41 @@ function spawnParticle(x, y, type, count) {
                 p.color = ['#FF0000', '#FF4400', '#FF8800', '#FFCC00'][Math.floor(Math.random() * 4)];
                 p.decay = 0.02;
                 break;
+            case 'aura':
+                p.vx = (Math.random() - 0.5) * 2;
+                p.vy = -3 - Math.random() * 4;
+                p.size = 4 + Math.random() * 6;
+                p.color = ['#FFD700', '#FFEE44', '#FFFFFF'][Math.floor(Math.random() * 3)];
+                p.decay = 0.03;
+                break;
+            case 'fire_aura':
+                p.vx = (Math.random() - 0.5) * 3;
+                p.vy = -2 - Math.random() * 3;
+                p.size = 3 + Math.random() * 5;
+                p.color = ['#FF4400', '#FF8800', '#FFCC00', '#FF0000'][Math.floor(Math.random() * 4)];
+                p.decay = 0.04;
+                break;
+            case 'shadow':
+                p.vx = (Math.random() - 0.5) * 4;
+                p.vy = (Math.random() - 0.5) * 4;
+                p.size = 3 + Math.random() * 4;
+                p.color = ['#9922CC', '#CC44FF', '#6600AA'][Math.floor(Math.random() * 3)];
+                p.decay = 0.04;
+                break;
+            case 'rage':
+                p.vx = (Math.random() - 0.5) * 5;
+                p.vy = -2 - Math.random() * 4;
+                p.size = 5 + Math.random() * 7;
+                p.color = ['#FF0000', '#CC0000', '#FF4400'][Math.floor(Math.random() * 3)];
+                p.decay = 0.03;
+                break;
+            case 'transform':
+                p.vx = (Math.random() - 0.5) * 15;
+                p.vy = (Math.random() - 0.5) * 15;
+                p.size = 5 + Math.random() * 10;
+                p.color = ['#FFD700', '#FFFFFF', '#FFEE44', '#FF8800'][Math.floor(Math.random() * 4)];
+                p.decay = 0.015;
+                break;
         }
         particles.push(p);
     }
@@ -168,6 +298,18 @@ function drawCharacter(x, y, z, w, h, facing, colors, state, frame, isPlayer, ty
     let outlineColor = colors.outline;
     let bobY = 0;
 
+    // Override colors when special ability is active
+    if (isPlayer && specialAbility.active) {
+        let ch = CHARACTERS[selectedChar];
+        if (ch.ability === 'supersaiyan') {
+            bodyColor = ch.ssBody;
+            outlineColor = ch.ssOutline;
+        } else if (ch.ability === 'berserker') {
+            bodyColor = ch.berserkBody;
+            outlineColor = ch.berserkOutline;
+        }
+    }
+
     if (state === 'walk') bobY = Math.sin(frame * 0.3) * 2;
     if (state === 'hurt') {
         bodyColor = '#FFFFFF';
@@ -190,7 +332,7 @@ function drawCharacter(x, y, z, w, h, facing, colors, state, frame, isPlayer, ty
     if (state === 'jumpkick') kickExtend = 18;
 
     // Legs
-    ctx.fillStyle = isPlayer ? COLORS.playerPants : bodyColor;
+    ctx.fillStyle = isPlayer ? CHARACTERS[selectedChar].pants : bodyColor;
     ctx.strokeStyle = outlineColor;
     ctx.lineWidth = 2;
     let legSpread = state === 'walk' ? Math.sin(frame * 0.3) * 8 : 4;
@@ -215,7 +357,7 @@ function drawCharacter(x, y, z, w, h, facing, colors, state, frame, isPlayer, ty
 
     // Belt (player only)
     if (isPlayer) {
-        ctx.fillStyle = COLORS.playerBelt;
+        ctx.fillStyle = CHARACTERS[selectedChar].belt;
         ctx.fillRect(-w / 3, h / 6 + bobY, w / 1.5, 5);
     }
 
@@ -233,39 +375,130 @@ function drawCharacter(x, y, z, w, h, facing, colors, state, frame, isPlayer, ty
 
     // Fist (when punching)
     if (punchExtend > 5) {
-        ctx.fillStyle = isPlayer ? '#FFCC88' : bodyColor;
+        ctx.fillStyle = isPlayer ? CHARACTERS[selectedChar].skin : bodyColor;
         ctx.fillRect(armX + 8, armY - 2, 10, 10);
         ctx.strokeRect(armX + 8, armY - 2, 10, 10);
     }
 
     // Head
-    ctx.fillStyle = isPlayer ? '#FFCC88' : '#DDBB99';
+    ctx.fillStyle = isPlayer ? CHARACTERS[selectedChar].skin : '#DDBB99';
     ctx.strokeStyle = outlineColor;
     ctx.beginPath();
     ctx.arc(0, -h / 3 + bobY, w / 4 + 2, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
 
-    // Hair (player gets spiky DBZ hair)
+    // Hair (player gets character-specific hair)
     if (isPlayer) {
-        ctx.fillStyle = COLORS.playerHair;
-        ctx.strokeStyle = '#CC9900';
+        let ch = CHARACTERS[selectedChar];
+        let hairColor = ch.hair;
+        // Override colors when ability is active
+        if (specialAbility.active) {
+            if (ch.ability === 'supersaiyan') hairColor = ch.ssHair;
+        }
+        ctx.fillStyle = hairColor;
+        ctx.strokeStyle = '#000';
         ctx.lineWidth = 1;
-        // Spiky hair
         let hx = 0, hy = -h / 3 + bobY;
-        ctx.beginPath();
-        ctx.moveTo(hx - 12, hy - 4);
-        ctx.lineTo(hx - 8, hy - 28);
-        ctx.lineTo(hx - 2, hy - 10);
-        ctx.lineTo(hx + 4, hy - 32);
-        ctx.lineTo(hx + 8, hy - 12);
-        ctx.lineTo(hx + 14, hy - 26);
-        ctx.lineTo(hx + 16, hy - 6);
-        ctx.lineTo(hx + 12, hy);
-        ctx.lineTo(hx - 12, hy);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
+        switch (ch.hairStyle) {
+            case 'goku':
+                // Goku hair - taller, wilder spikes
+                if (specialAbility.active) {
+                    // Super Saiyan - bigger, golden, more spikes
+                    ctx.fillStyle = '#FFD700';
+                    ctx.strokeStyle = '#DDAA00';
+                    ctx.beginPath();
+                    ctx.moveTo(hx - 14, hy);
+                    ctx.lineTo(hx - 16, hy - 36);
+                    ctx.lineTo(hx - 8, hy - 14);
+                    ctx.lineTo(hx - 4, hy - 44);
+                    ctx.lineTo(hx + 2, hy - 16);
+                    ctx.lineTo(hx + 6, hy - 48);
+                    ctx.lineTo(hx + 10, hy - 18);
+                    ctx.lineTo(hx + 16, hy - 38);
+                    ctx.lineTo(hx + 18, hy - 8);
+                    ctx.lineTo(hx + 14, hy);
+                    ctx.closePath();
+                    ctx.fill(); ctx.stroke();
+                    // Extra side spikes
+                    ctx.beginPath();
+                    ctx.moveTo(hx - 14, hy - 2);
+                    ctx.lineTo(hx - 24, hy - 20);
+                    ctx.lineTo(hx - 12, hy - 8);
+                    ctx.closePath();
+                    ctx.fill(); ctx.stroke();
+                    ctx.beginPath();
+                    ctx.moveTo(hx + 14, hy - 2);
+                    ctx.lineTo(hx + 24, hy - 20);
+                    ctx.lineTo(hx + 12, hy - 8);
+                    ctx.closePath();
+                    ctx.fill(); ctx.stroke();
+                } else {
+                    // Base form - black spiky hair
+                    ctx.beginPath();
+                    ctx.moveTo(hx - 12, hy);
+                    ctx.lineTo(hx - 10, hy - 24);
+                    ctx.lineTo(hx - 4, hy - 10);
+                    ctx.lineTo(hx + 0, hy - 30);
+                    ctx.lineTo(hx + 6, hy - 12);
+                    ctx.lineTo(hx + 12, hy - 26);
+                    ctx.lineTo(hx + 14, hy - 6);
+                    ctx.lineTo(hx + 12, hy);
+                    ctx.closePath();
+                    ctx.fill(); ctx.stroke();
+                }
+                break;
+            case 'spiky':
+                ctx.beginPath();
+                ctx.moveTo(hx - 12, hy - 4);
+                ctx.lineTo(hx - 8, hy - 28);
+                ctx.lineTo(hx - 2, hy - 10);
+                ctx.lineTo(hx + 4, hy - 32);
+                ctx.lineTo(hx + 8, hy - 12);
+                ctx.lineTo(hx + 14, hy - 26);
+                ctx.lineTo(hx + 16, hy - 6);
+                ctx.lineTo(hx + 12, hy);
+                ctx.lineTo(hx - 12, hy);
+                ctx.closePath();
+                ctx.fill(); ctx.stroke();
+                break;
+            case 'long':
+                ctx.beginPath();
+                ctx.arc(hx, hy - 4, 16, Math.PI, 0);
+                ctx.lineTo(hx + 14, hy + 16);
+                ctx.lineTo(hx + 10, hy + 14);
+                ctx.lineTo(hx - 10, hy + 14);
+                ctx.lineTo(hx - 14, hy + 16);
+                ctx.closePath();
+                ctx.fill(); ctx.stroke();
+                break;
+            case 'mohawk':
+                ctx.fillRect(hx - 4, hy - 24, 8, 20);
+                ctx.strokeRect(hx - 4, hy - 24, 8, 20);
+                break;
+            case 'flame':
+                ctx.beginPath();
+                ctx.moveTo(hx - 10, hy);
+                ctx.lineTo(hx - 6, hy - 18);
+                ctx.lineTo(hx - 2, hy - 8);
+                ctx.lineTo(hx + 2, hy - 26);
+                ctx.lineTo(hx + 6, hy - 10);
+                ctx.lineTo(hx + 10, hy - 20);
+                ctx.lineTo(hx + 12, hy);
+                ctx.closePath();
+                ctx.fill(); ctx.stroke();
+                // Flame flicker
+                ctx.globalAlpha = 0.5 + Math.sin(frame * 0.4) * 0.3;
+                ctx.fillStyle = '#FFDD00';
+                ctx.beginPath();
+                ctx.moveTo(hx - 6, hy - 4);
+                ctx.lineTo(hx, hy - 22 - Math.sin(frame * 0.6) * 4);
+                ctx.lineTo(hx + 6, hy - 4);
+                ctx.closePath();
+                ctx.fill();
+                ctx.globalAlpha = 1;
+                break;
+        }
     } else if (type === 'boss') {
         // Boss gets horns
         ctx.fillStyle = '#880000';
@@ -377,7 +610,7 @@ function createProjectile(x, y, dir, type, fromPlayer) {
         w: type === 'energy' ? 24 : 16,
         h: type === 'energy' ? 16 : 12,
         type, fromPlayer,
-        damage: fromPlayer ? 20 : 10,
+        damage: fromPlayer ? CHARACTERS[selectedChar].specialDmg : 10,
         life: 80,
         frame: 0,
     };
@@ -665,6 +898,79 @@ function drawHUD() {
     }
 }
 
+// ---- Ability HUD ----
+function drawAbilityHUD() {
+    let ch = CHARACTERS[selectedChar];
+    if (!ch.ability) return;
+
+    ctx.save();
+
+    if (specialAbility.active) {
+        // Active ability bar - shows remaining time
+        let pct = specialAbility.timer / ch.abilityDuration;
+        let barW = 200;
+        let barX = W / 2 - barW / 2;
+        let barY = 60;
+
+        // Background
+        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+        ctx.fillRect(barX - 2, barY - 2, barW + 4, 18);
+
+        // Timer bar with ability-specific color
+        let barColor;
+        switch (ch.ability) {
+            case 'supersaiyan': barColor = '#FFD700'; break;
+            case 'dragonfist': barColor = '#44CCFF'; break;
+            case 'shadowclone': barColor = '#CC44FF'; break;
+            case 'berserker': barColor = '#FF0000'; break;
+            case 'inferno': barColor = '#FF4400'; break;
+            default: barColor = '#FFF';
+        }
+        ctx.fillStyle = barColor;
+        ctx.fillRect(barX, barY, barW * pct, 14);
+
+        // Flashing when about to expire
+        if (specialAbility.timer < 300 && levelTimer % 10 < 5) {
+            ctx.fillStyle = 'rgba(255,255,255,0.5)';
+            ctx.fillRect(barX, barY, barW * pct, 14);
+        }
+
+        ctx.strokeStyle = barColor;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(barX - 2, barY - 2, barW + 4, 18);
+
+        // Ability name
+        ctx.fillStyle = '#FFF';
+        ctx.font = 'bold 11px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(ch.abilityName + ' - ' + Math.ceil(specialAbility.timer / 60) + 's', W / 2, barY + 12);
+        ctx.textAlign = 'left';
+    } else {
+        // Show combo progress toward ability trigger
+        let comboPct = Math.min(comboCount / ch.abilityCombo, 1);
+        if (comboPct > 0 && !specialAbility.triggered) {
+            let barW = 120;
+            let barX = W / 2 - barW / 2;
+            let barY = 60;
+
+            ctx.fillStyle = 'rgba(0,0,0,0.5)';
+            ctx.fillRect(barX - 2, barY - 2, barW + 4, 14);
+            ctx.fillStyle = comboPct >= 1 ? '#FFD700' : '#888';
+            ctx.fillRect(barX, barY, barW * comboPct, 10);
+            ctx.strokeStyle = '#666';
+            ctx.strokeRect(barX - 2, barY - 2, barW + 4, 14);
+
+            ctx.fillStyle = '#AAA';
+            ctx.font = '9px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText(ch.abilityDesc + ' (' + comboCount + '/' + ch.abilityCombo + ')', W / 2, barY + 9);
+            ctx.textAlign = 'left';
+        }
+    }
+
+    ctx.restore();
+}
+
 // ---- Player Update ----
 function updatePlayer() {
     if (player.state === 'hurt') {
@@ -688,12 +994,15 @@ function updatePlayer() {
         if (player.attackTimer === (player.state === 'kick' ? 10 : player.state === 'jumpkick' ? 8 : 8)) {
             let range = player.state === 'kick' || player.state === 'jumpkick' ? 60 : 50;
             let hitbox = attackHitbox(player, range);
-            let damage = player.state === 'kick' ? 12 : player.state === 'jumpkick' ? 15 : (8 + player.punchCombo * 3);
+            let ch = CHARACTERS[selectedChar];
+            let damage = player.state === 'kick' ? ch.kickDmg : player.state === 'jumpkick' ? Math.floor(ch.kickDmg * 1.25) : (ch.punchDmg + player.punchCombo * 3);
             for (let e of enemies) {
                 if (e.state !== 'dead' && boxOverlap(hitbox, e)) {
                     hurtEnemy(e, damage, player.facing);
                 }
             }
+            // Shadow clone attacks
+            shadowCloneAttack(hitbox, damage, player.facing);
         }
         if (player.attackTimer <= 0) {
             if (player.state === 'jump' || player.state === 'jumpkick') {
@@ -786,15 +1095,26 @@ function updatePlayer() {
         player.attackTimer = 20;
         player.energy -= 25;
         player.frame = 0;
-        projectiles.push(createProjectile(
-            player.x + player.facing * 30,
-            player.y - 10,
-            player.facing,
-            'energy',
-            true
-        ));
-        spawnParticle(player.x, player.y - 10, 'energy', 10);
-        screenShake = 8;
+        let ch = CHARACTERS[selectedChar];
+
+        if (specialAbility.active && ch.ability === 'dragonfist') {
+            // Triple blast - spread pattern
+            projectiles.push(createProjectile(player.x + player.facing * 30, player.y - 10, player.facing, 'energy', true));
+            projectiles.push(createProjectile(player.x + player.facing * 30, player.y - 30, player.facing, 'energy', true));
+            projectiles.push(createProjectile(player.x + player.facing * 30, player.y + 10, player.facing, 'energy', true));
+            spawnParticle(player.x, player.y - 10, 'energy', 20);
+            screenShake = 12;
+        } else {
+            projectiles.push(createProjectile(
+                player.x + player.facing * 30,
+                player.y - 10,
+                player.facing,
+                'energy',
+                true
+            ));
+            spawnParticle(player.x, player.y - 10, 'energy', 10);
+            screenShake = 8;
+        }
         keys['l'] = false;
         keys['c'] = false;
     }
@@ -813,8 +1133,11 @@ function updatePlayer() {
     // Combo timer
     if (comboTimer > 0) {
         comboTimer--;
-        if (comboTimer <= 0) comboCount = 0;
+        if (comboTimer <= 0) { comboCount = 0; peakCombo = 0; }
     }
+
+    // Update special ability
+    updateSpecialAbility();
 }
 
 // ---- Enemy AI ----
@@ -913,18 +1236,254 @@ function updateEnemy(e) {
     e.frame++;
 }
 
+// ---- Special Ability System ----
+function activateSpecialAbility() {
+    let ch = CHARACTERS[selectedChar];
+    specialAbility.active = true;
+    specialAbility.timer = ch.abilityDuration;
+    specialAbility.triggered = true;
+
+    // Big transformation effect
+    spawnParticle(player.x, player.y, 'transform', 40);
+    screenShake = 20;
+    screenFlash = 15;
+    hitstopFrames = 15;
+
+    // Apply stat changes
+    if (ch.ability === 'supersaiyan') {
+        player.speed = ch.speed * ch.ssSpeedMult;
+    } else if (ch.ability === 'berserker') {
+        player.speed = ch.speed * ch.berserkSpeedMult;
+        player.invincible = 30; // brief invincibility on activation
+    } else if (ch.ability === 'shadowclone') {
+        // Clones are handled in updatePlayer
+    }
+}
+
+function deactivateSpecialAbility() {
+    let ch = CHARACTERS[selectedChar];
+    specialAbility.active = false;
+    specialAbility.timer = 0;
+
+    // Restore base stats
+    player.speed = ch.speed;
+
+    // Wind-down particles
+    spawnParticle(player.x, player.y, 'energy', 15);
+}
+
+function updateSpecialAbility() {
+    if (!specialAbility.active) return;
+
+    let ch = CHARACTERS[selectedChar];
+    specialAbility.timer--;
+
+    if (specialAbility.timer <= 0) {
+        deactivateSpecialAbility();
+        return;
+    }
+
+    // Per-frame effects based on ability
+    switch (ch.ability) {
+        case 'supersaiyan':
+            // Golden aura particles
+            if (levelTimer % 3 === 0) {
+                spawnParticle(player.x + (Math.random() - 0.5) * 30, player.y + 10, 'aura', 1);
+            }
+            // Energy regens faster
+            player.energy = Math.min(player.maxEnergy, player.energy + 0.2);
+            break;
+
+        case 'dragonfist':
+            // Blue dragon aura
+            if (levelTimer % 4 === 0) {
+                spawnParticle(player.x + (Math.random() - 0.5) * 20, player.y, 'energy', 1);
+            }
+            // Free energy during dragon fist
+            player.energy = player.maxEnergy;
+            break;
+
+        case 'shadowclone':
+            // Purple shadow particles
+            if (levelTimer % 5 === 0) {
+                spawnParticle(player.x + (Math.random() - 0.5) * 40, player.y, 'shadow', 1);
+            }
+            break;
+
+        case 'berserker':
+            // Red rage particles
+            if (levelTimer % 3 === 0) {
+                spawnParticle(player.x + (Math.random() - 0.5) * 30, player.y + 10, 'rage', 1);
+            }
+            // Slowly heal during rage
+            player.hp = Math.min(player.maxHP, player.hp + 0.05);
+            break;
+
+        case 'inferno':
+            // Fire aura particles
+            if (levelTimer % 2 === 0) {
+                spawnParticle(player.x + (Math.random() - 0.5) * 40, player.y + 20, 'fire_aura', 1);
+            }
+            // Burn nearby enemies
+            if (levelTimer % 20 === 0) {
+                for (let e of enemies) {
+                    if (e.state !== 'dead') {
+                        let dist = Math.sqrt((e.x - player.x) ** 2 + (e.y - player.y) ** 2);
+                        if (dist < 120) {
+                            e.hp -= 5;
+                            spawnParticle(e.x, e.y - 10, 'fire_aura', 3);
+                            if (e.hp <= 0) {
+                                e.state = 'dead';
+                                enemiesDefeated++;
+                                score += e.score;
+                                spawnParticle(e.x, e.y, 'death', 20);
+                                screenShake = 6;
+                            }
+                        }
+                    }
+                }
+            }
+            break;
+    }
+}
+
+// Draw shadow clones (for Kira's ability)
+function drawShadowClones() {
+    if (!specialAbility.active || CHARACTERS[selectedChar].ability !== 'shadowclone') return;
+
+    // Draw two ghost clones offset from player
+    let offsets = [
+        { x: -40, y: -15, alpha: 0.4 },
+        { x: 40, y: 15, alpha: 0.4 },
+    ];
+
+    for (let off of offsets) {
+        ctx.globalAlpha = off.alpha + Math.sin(levelTimer * 0.1) * 0.1;
+        let ch = CHARACTERS[selectedChar];
+        drawCharacter(
+            player.x + off.x, player.y + off.y, player.z,
+            player.w, player.h, player.facing,
+            { body: ch.body, outline: ch.outline },
+            player.state, player.frame, true, 'player'
+        );
+    }
+    ctx.globalAlpha = 1;
+}
+
+// Shadow clones deal damage when player attacks
+function shadowCloneAttack(hitbox, damage, facing) {
+    if (!specialAbility.active || CHARACTERS[selectedChar].ability !== 'shadowclone') return;
+    let offsets = [{ x: -40, y: -15 }, { x: 40, y: 15 }];
+    for (let off of offsets) {
+        let cloneHitbox = {
+            x: hitbox.x + off.x,
+            y: hitbox.y + off.y,
+            w: hitbox.w,
+            h: hitbox.h,
+        };
+        for (let e of enemies) {
+            if (e.state !== 'dead' && boxOverlap(cloneHitbox, e)) {
+                e.hp -= Math.floor(damage * 0.6);
+                e.state = 'hurt';
+                e.hurtTimer = 10;
+                e.vx = facing * 4;
+                spawnParticle(e.x, e.y - e.h / 3, 'shadow', 5);
+                if (e.hp <= 0) {
+                    e.state = 'dead';
+                    enemiesDefeated++;
+                    score += e.score;
+                    spawnParticle(e.x, e.y, 'death', 15);
+                    screenShake = 6;
+                }
+            }
+        }
+    }
+}
+
+// Draw ability aura around player
+function drawAbilityAura() {
+    if (!specialAbility.active) return;
+    let ch = CHARACTERS[selectedChar];
+    let px = player.x, py = player.y - player.z;
+
+    ctx.save();
+    switch (ch.ability) {
+        case 'supersaiyan':
+            // Golden pulsing aura
+            let ssPulse = Math.sin(levelTimer * 0.15) * 0.15 + 0.3;
+            ctx.strokeStyle = '#FFD700';
+            ctx.lineWidth = 3;
+            ctx.globalAlpha = ssPulse;
+            ctx.beginPath();
+            ctx.ellipse(px, py - 10, 35 + Math.sin(levelTimer * 0.2) * 5, 50 + Math.sin(levelTimer * 0.15) * 5, 0, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.globalAlpha = ssPulse * 0.5;
+            ctx.fillStyle = 'rgba(255,215,0,0.15)';
+            ctx.fill();
+            break;
+
+        case 'berserker':
+            let ragePulse = Math.sin(levelTimer * 0.2) * 0.15 + 0.25;
+            ctx.strokeStyle = '#FF0000';
+            ctx.lineWidth = 4;
+            ctx.globalAlpha = ragePulse;
+            ctx.beginPath();
+            ctx.ellipse(px, py - 5, 40 + Math.sin(levelTimer * 0.3) * 8, 45, 0, 0, Math.PI * 2);
+            ctx.stroke();
+            break;
+
+        case 'inferno':
+            let firePulse = Math.sin(levelTimer * 0.1) * 0.1 + 0.2;
+            ctx.globalAlpha = firePulse;
+            // Draw fire radius indicator
+            ctx.strokeStyle = '#FF4400';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([8, 4]);
+            ctx.beginPath();
+            ctx.ellipse(px, py + 20, 120, 30, 0, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            break;
+
+        case 'dragonfist':
+            let dragonPulse = Math.sin(levelTimer * 0.12) * 0.15 + 0.25;
+            ctx.strokeStyle = '#44CCFF';
+            ctx.lineWidth = 3;
+            ctx.globalAlpha = dragonPulse;
+            ctx.beginPath();
+            ctx.ellipse(px, py - 10, 32, 48, 0, 0, Math.PI * 2);
+            ctx.stroke();
+            break;
+    }
+    ctx.restore();
+}
+
 // ---- Hurt Functions ----
 function hurtEnemy(e, damage, knockDir) {
+    // Apply ability damage multipliers
+    let ch = CHARACTERS[selectedChar];
+    if (specialAbility.active) {
+        if (ch.ability === 'supersaiyan') damage = Math.floor(damage * ch.ssDmgMult);
+        else if (ch.ability === 'berserker') damage = Math.floor(damage * ch.berserkDmgMult);
+        else if (ch.ability === 'dragonfist') damage = Math.floor(damage * 1.5);
+    }
+
     e.hp -= damage;
     e.state = 'hurt';
     e.hurtTimer = 15;
-    e.vx = knockDir * 6;
+    e.vx = knockDir * (specialAbility.active && ch.ability === 'berserker' ? 12 : 6);
     spawnParticle(e.x, e.y - e.h / 3, 'hit', 8);
     screenShake = 4;
     hitstopFrames = 3;
     comboCount++;
     comboTimer = 90;
+    if (comboCount > peakCombo) peakCombo = comboCount;
     score += 10 * comboCount;
+
+    // Check ability trigger
+    if (!specialAbility.active && ch.abilityTrigger === 'combo' && comboCount >= ch.abilityCombo) {
+        activateSpecialAbility();
+    }
 
     if (e.hp <= 0) {
         e.state = 'dead';
@@ -944,10 +1503,16 @@ function hurtEnemy(e, damage, knockDir) {
 }
 
 function hurtPlayer(damage, knockDir) {
+    // Ability damage reduction
+    if (specialAbility.active) {
+        let ch = CHARACTERS[selectedChar];
+        if (ch.ability === 'supersaiyan') damage = Math.floor(damage * 0.5);
+        if (ch.ability === 'berserker') damage = Math.floor(damage * 0.3);
+    }
     player.hp -= damage;
     player.state = 'hurt';
-    player.hurtTimer = 20;
-    player.vx = knockDir * 5;
+    player.hurtTimer = specialAbility.active && CHARACTERS[selectedChar].ability === 'berserker' ? 8 : 20;
+    player.vx = knockDir * (specialAbility.active && CHARACTERS[selectedChar].ability === 'berserker' ? 2 : 5);
     spawnParticle(player.x, player.y - player.h / 3, 'hit', 6);
     screenShake = 6;
 
@@ -1123,6 +1688,10 @@ function startLevel(lvl) {
     levelTimer = 0;
     comboCount = 0;
     comboTimer = 0;
+    peakCombo = 0;
+    // Allow ability to trigger again each level (but deactivate if currently active)
+    if (specialAbility.active) deactivateSpecialAbility();
+    specialAbility.triggered = false;
     player.x = 100;
     player.y = H - 120;
     player.z = 0;
@@ -1134,10 +1703,19 @@ function startLevel(lvl) {
 }
 
 function resetGame() {
+    let ch = CHARACTERS[selectedChar];
+    player.speed = ch.speed;
+    player.maxHP = ch.maxHP;
+    player.maxEnergy = ch.maxEnergy;
     score = 0;
     player.hp = player.maxHP;
     player.energy = player.maxEnergy / 2;
     player.lives = 3;
+    specialAbility.active = false;
+    specialAbility.timer = 0;
+    specialAbility.cooldown = 0;
+    specialAbility.triggered = false;
+    peakCombo = 0;
     startLevel(1);
 }
 
@@ -1188,7 +1766,7 @@ function drawTitle() {
     // Animated character preview
     let previewY = 320;
     drawCharacter(W / 2 - 100, previewY, 0, 48, 64, 1,
-        { body: COLORS.playerBody, outline: COLORS.playerOutline },
+        { body: CHARACTERS[selectedChar].body, outline: CHARACTERS[selectedChar].outline },
         'idle', levelTimer, true, 'player');
     drawCharacter(W / 2 + 100, previewY, 0, 44, 60, -1,
         { body: COLORS.grunt, outline: COLORS.gruntOutline },
@@ -1210,9 +1788,145 @@ function drawTitle() {
     // Start prompt
     ctx.fillStyle = Math.sin(levelTimer * 0.08) > 0 ? '#FFD700' : '#FF8800';
     ctx.font = 'bold 22px monospace';
-    ctx.fillText('PRESS ENTER TO START', W / 2, 530);
+    ctx.fillText('PRESS ENTER TO SELECT FIGHTER', W / 2, 530);
 
     ctx.restore();
+}
+
+// ---- Character Select Screen ----
+function drawCharSelect() {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+
+    // Background grid
+    ctx.strokeStyle = 'rgba(255,102,0,0.1)';
+    ctx.lineWidth = 1;
+    for (let gx = 0; gx < W; gx += 40) {
+        ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke();
+    }
+    for (let gy = 0; gy < H; gy += 40) {
+        ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
+    }
+
+    ctx.textAlign = 'center';
+
+    // Title
+    ctx.fillStyle = '#FFD700';
+    ctx.font = 'bold 36px monospace';
+    ctx.fillText('CHOOSE YOUR FIGHTER', W / 2, 50);
+
+    // Character slots
+    let slotW = Math.min(170, (W - 60) / CHARACTERS.length - 10);
+    let totalW = CHARACTERS.length * slotW + (CHARACTERS.length - 1) * 10;
+    let startX = (W - totalW) / 2 + slotW / 2;
+
+    for (let i = 0; i < CHARACTERS.length; i++) {
+        let ch = CHARACTERS[i];
+        let cx = startX + i * (slotW + 10);
+        let cy = 220;
+        let isSelected = i === selectedChar;
+
+        // Slot background
+        ctx.fillStyle = isSelected ? 'rgba(255,136,0,0.3)' : 'rgba(40,40,60,0.6)';
+        ctx.fillRect(cx - slotW / 2, 80, slotW, 300);
+
+        // Selection border
+        if (isSelected) {
+            ctx.strokeStyle = '#FFD700';
+            ctx.lineWidth = 3;
+            ctx.strokeRect(cx - slotW / 2, 80, slotW, 300);
+            // Animated corner highlights
+            let pulse = Math.sin(levelTimer * 0.1) * 0.5 + 0.5;
+            ctx.fillStyle = `rgba(255,215,0,${pulse * 0.6})`;
+            ctx.fillRect(cx - slotW / 2 - 2, 78, slotW + 4, 4);
+            ctx.fillRect(cx - slotW / 2 - 2, 376, slotW + 4, 4);
+        } else {
+            ctx.strokeStyle = '#444';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(cx - slotW / 2, 80, slotW, 300);
+        }
+
+        // Character name
+        ctx.fillStyle = isSelected ? '#FFD700' : '#888';
+        ctx.font = 'bold 20px monospace';
+        ctx.fillText(ch.name, cx, 110);
+
+        // Draw character model
+        drawCharacter(cx, cy, 0, 48, 64, 1,
+            { body: ch.body, outline: ch.outline },
+            isSelected ? 'walk' : 'idle', levelTimer, true, 'player');
+
+        // Stats
+        let statY = 290;
+        ctx.font = '11px monospace';
+
+        // SPD bar
+        ctx.fillStyle = '#888';
+        ctx.fillText('SPD', cx - 40, statY);
+        ctx.fillStyle = '#333';
+        ctx.fillRect(cx - 15, statY - 8, 60, 8);
+        ctx.fillStyle = '#44CC44';
+        ctx.fillRect(cx - 15, statY - 8, (ch.speed / 5) * 60, 8);
+
+        // HP bar
+        statY += 18;
+        ctx.fillStyle = '#888';
+        ctx.fillText('HP', cx - 40, statY);
+        ctx.fillStyle = '#333';
+        ctx.fillRect(cx - 15, statY - 8, 60, 8);
+        ctx.fillStyle = '#CC4444';
+        ctx.fillRect(cx - 15, statY - 8, (ch.maxHP / 150) * 60, 8);
+
+        // KI bar
+        statY += 18;
+        ctx.fillStyle = '#888';
+        ctx.fillText('KI', cx - 40, statY);
+        ctx.fillStyle = '#333';
+        ctx.fillRect(cx - 15, statY - 8, 60, 8);
+        ctx.fillStyle = '#4488FF';
+        ctx.fillRect(cx - 15, statY - 8, (ch.maxEnergy / 150) * 60, 8);
+
+        // PWR bar
+        statY += 18;
+        ctx.fillStyle = '#888';
+        ctx.fillText('PWR', cx - 40, statY);
+        ctx.fillStyle = '#333';
+        ctx.fillRect(cx - 15, statY - 8, 60, 8);
+        ctx.fillStyle = '#FF8800';
+        ctx.fillRect(cx - 15, statY - 8, (ch.punchDmg / 14) * 60, 8);
+
+        // Ability name under stats
+        if (ch.abilityName) {
+            ctx.fillStyle = isSelected ? '#FFD700' : '#666';
+            ctx.font = 'bold 9px monospace';
+            ctx.fillText(ch.abilityName, cx, statY + 18);
+        }
+    }
+
+    // Selected character description
+    {
+        let ch = CHARACTERS[selectedChar];
+        ctx.fillStyle = '#CCC';
+        ctx.font = '13px monospace';
+        ctx.fillText(ch.desc, W / 2, 400);
+    }
+
+    // Navigation hints
+    ctx.fillStyle = '#AAA';
+    ctx.font = '14px monospace';
+    ctx.fillText('< LEFT / RIGHT >', W / 2, 430);
+
+    // Confirm prompt
+    ctx.fillStyle = Math.sin(levelTimer * 0.08) > 0 ? '#FFD700' : '#FF8800';
+    ctx.font = 'bold 20px monospace';
+    ctx.fillText('PRESS ENTER TO FIGHT', W / 2, 470);
+
+    // Selected character name big
+    ctx.fillStyle = CHARACTERS[selectedChar].body;
+    ctx.font = 'bold 24px monospace';
+    ctx.fillText(CHARACTERS[selectedChar].name, W / 2, 510);
+
+    ctx.textAlign = 'left';
 }
 
 // ---- Level Clear Screen ----
@@ -1309,6 +2023,23 @@ function gameLoop() {
     switch (gameState) {
         case 'title':
             if (keys['Enter']) {
+                gameState = 'charSelect';
+                keys['Enter'] = false;
+            }
+            break;
+
+        case 'charSelect':
+            if (keys['ArrowLeft'] || keys['a']) {
+                selectedChar = (selectedChar - 1 + CHARACTERS.length) % CHARACTERS.length;
+                keys['ArrowLeft'] = false;
+                keys['a'] = false;
+            }
+            if (keys['ArrowRight'] || keys['d']) {
+                selectedChar = (selectedChar + 1) % CHARACTERS.length;
+                keys['ArrowRight'] = false;
+                keys['d'] = false;
+            }
+            if (keys['Enter']) {
                 resetGame();
                 keys['Enter'] = false;
             }
@@ -1370,6 +2101,10 @@ function drawFrame() {
             drawTitle();
             break;
 
+        case 'charSelect':
+            drawCharSelect();
+            break;
+
         case 'playing':
             drawBackground();
 
@@ -1389,7 +2124,7 @@ function drawFrame() {
                 if (o === player && player.invincible > 0 && player.invincible % 6 < 3) continue;
                 let colors;
                 if (d.isPlayer) {
-                    colors = { body: COLORS.playerBody, outline: COLORS.playerOutline };
+                    colors = { body: CHARACTERS[selectedChar].body, outline: CHARACTERS[selectedChar].outline };
                 } else {
                     let type = o.type;
                     colors = { body: COLORS[type], outline: COLORS[type + 'Outline'] };
@@ -1410,9 +2145,12 @@ function drawFrame() {
                 }
             }
 
+            drawShadowClones();
+            drawAbilityAura();
             drawProjectiles();
             drawParticles();
             drawHUD();
+            drawAbilityHUD();
             break;
 
         case 'levelClear':

@@ -142,7 +142,7 @@ const CHARACTERS = [
         abilityDesc: '12-HIT COMBO TO SUMMON',
         abilityTrigger: 'combo',
         abilityCombo: 12,
-        abilityDuration: 1800,
+        abilityDuration: 600,
     },
     {
         name: 'BRUTUS',
@@ -154,10 +154,10 @@ const CHARACTERS = [
         // Berserker: 10-hit combo → 30s of 2.5x damage, can't be stunned, massive knockback
         ability: 'berserker',
         abilityName: 'BERSERKER RAGE',
-        abilityDesc: '10-HIT COMBO TO RAGE',
+        abilityDesc: '15-HIT COMBO TO RAGE',
         abilityTrigger: 'combo',
-        abilityCombo: 10,
-        abilityDuration: 1800,
+        abilityCombo: 15,
+        abilityDuration: 300,
         berserkDmgMult: 2.5, berserkSpeedMult: 1.3,
         berserkBody: '#CC0000', berserkOutline: '#880000',
     },
